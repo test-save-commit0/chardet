@@ -37,4 +37,13 @@ class CharSetProber:
         characters and extended ASCII characters, but is currently only used by
         ``Latin1Prober``.
         """
-        pass
+        inside_tag = False
+        filtered = bytearray()
+        for byte in buf:
+            if byte == ord(b'<'):
+                inside_tag = True
+            elif byte == ord(b'>'):
+                inside_tag = False
+            elif not inside_tag:
+                filtered.append(byte)
+        return bytes(filtered)
