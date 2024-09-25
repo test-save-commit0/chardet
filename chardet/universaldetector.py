@@ -65,7 +65,15 @@ class UniversalDetector:
         initial states.  This is called by ``__init__``, so you only need to
         call this directly in between analyses of different documents.
         """
-        pass
+        self.result = {'encoding': None, 'confidence': 0.0, 'language': None}
+        self.done = False
+        self._got_data = False
+        self._input_state = InputState.PURE_ASCII
+        self._last_char = None
+        self._has_win_bytes = False
+        self._esc_charset_prober = None
+        self._utf1632_prober = None
+        self._charset_probers = []
 
     def feed(self, byte_str):
         """
@@ -81,7 +89,56 @@ class UniversalDetector:
            You should always call ``close`` when you're done feeding in your
            document if ``done`` is not already ``True``.
         """
-        pass
+        if self.done:
+            return
+
+        if not len(byte_str):
+            return
+
+        if not self._got_data:
+            self._got_data = True
+            if byte_str.startswith(codecs.BOM_UTF8):
+                self.result = {'encoding': 'UTF-8-SIG', 'confidence': 1.0, 'language': ''}
+                self.done = True
+                return
+
+        for prober in self._charset_probers:
+            if prober.feed(byte_str) == ProbingState.FOUND_IT:
+                self.result = {'encoding': prober.charset_name,
+                               'confidence': prober.get_confidence(),
+                               'language': prober.language}
+                self.done = True
+                return
+
+        if not self.done:
+            if self._input_state == InputState.PURE_ASCII:
+                if self.HIGH_BYTE_DETECTOR.search(byte_str):
+                    self._input_state = InputState.HIGH_BYTE
+                elif self._input_state == InputState.PURE_ASCII and self.ESC_DETECTOR.search(byte_str):
+                    self._input_state = InputState.ESC_ASCII
+
+            if self._input_state == InputState.ESC_ASCII:
+                if not self._esc_charset_prober:
+                    self._esc_charset_prober = EscCharSetProber(self.lang_filter)
+                if self._esc_charset_prober.feed(byte_str) == ProbingState.FOUND_IT:
+                    self.result = {'encoding': self._esc_charset_prober.charset_name,
+                                   'confidence': self._esc_charset_prober.get_confidence(),
+                                   'language': self._esc_charset_prober.language}
+                    self.done = True
+            elif self._input_state == InputState.HIGH_BYTE:
+                if not self._utf1632_prober:
+                    self._utf1632_prober = UTF1632Prober()
+                if not self._charset_probers:
+                    self._charset_probers = [MBCSGroupProber(self.lang_filter)]
+                    self._charset_probers.append(SBCSGroupProber())
+                    self._charset_probers.append(Latin1Prober())
+                for prober in self._charset_probers:
+                    if prober.feed(byte_str) == ProbingState.FOUND_IT:
+                        self.result = {'encoding': prober.charset_name,
+                                       'confidence': prober.get_confidence(),
+                                       'language': prober.language}
+                        self.done = True
+                        return
 
     def close(self):
         """
@@ -91,4 +148,42 @@ class UniversalDetector:
         :returns:  The ``result`` attribute, a ``dict`` with the keys
                    `encoding`, `confidence`, and `language`.
         """
-        pass
+        if self.done:
+            return self.result
+        if not self._got_data:
+            self.logger.debug('no data received!')
+            return self.result
+
+        if self._input_state == InputState.PURE_ASCII:
+            self.result = {'encoding': 'ascii', 'confidence': 1.0, 'language': ''}
+            return self.result
+
+        if self._input_state == InputState.HIGH_BYTE:
+            prober_confidence = None
+            max_prober_confidence = 0.0
+            max_prober = None
+            for prober in self._charset_probers:
+                if not prober:
+                    continue
+                prober_confidence = prober.get_confidence()
+                if prober_confidence > max_prober_confidence:
+                    max_prober_confidence = prober_confidence
+                    max_prober = prober
+            if max_prober and (max_prober_confidence > self.MINIMUM_THRESHOLD):
+                charset_name = max_prober.charset_name
+                lower_charset_name = max_prober.charset_name.lower()
+                confidence = max_prober.get_confidence()
+                # Use Windows encoding name instead of ISO-8859 if we saw any
+                # extra Windows-specific bytes
+                if lower_charset_name.startswith('iso-8859'):
+                    if self._has_win_bytes:
+                        charset_name = self.ISO_WIN_MAP.get(lower_charset_name,
+                                                            charset_name)
+                self.result = {'encoding': charset_name,
+                               'confidence': confidence,
+                               'language': max_prober.language}
+            else:
+                self.result = {'encoding': None, 'confidence': 0.0, 'language': None}
+
+        self.done = True
+        return self.result
