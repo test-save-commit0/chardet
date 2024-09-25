@@ -31,7 +31,8 @@ class UTF1632Prober(CharSetProber):
 
         https://en.wikipedia.org/wiki/UTF-32
         """
-        pass
+        value = (quad[0] << 24) | (quad[1] << 16) | (quad[2] << 8) | quad[3]
+        return 0x00000000 <= value <= 0x0010FFFF and not (0x0000D800 <= value <= 0x0000DFFF)
 
     def validate_utf16_characters(self, pair):
         """
@@ -43,4 +44,22 @@ class UTF1632Prober(CharSetProber):
 
         https://en.wikipedia.org/wiki/UTF-16
         """
-        pass
+        value = (pair[0] << 8) | pair[1]
+        if 0xD800 <= value <= 0xDBFF:
+            # First half of a surrogate pair
+            if not self.first_half_surrogate_pair_detected_16be:
+                self.first_half_surrogate_pair_detected_16be = True
+                return True
+            else:
+                return False
+        elif 0xDC00 <= value <= 0xDFFF:
+            # Second half of a surrogate pair
+            if self.first_half_surrogate_pair_detected_16be:
+                self.first_half_surrogate_pair_detected_16be = False
+                return True
+            else:
+                return False
+        else:
+            # Regular UTF-16 character
+            self.first_half_surrogate_pair_detected_16be = False
+            return 0x0000 <= value < 0xD800 or 0xE000 <= value <= 0xFFFF
