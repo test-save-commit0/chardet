@@ -306,6 +306,49 @@ class JapaneseContextAnalysis:
         self._done = None
         self.reset()
 
+    def reset(self):
+        self._total_rel = 0
+        self._rel_sample = [0] * self.NUM_OF_CATEGORY
+        self._need_to_skip_char_num = 0
+        self._last_char_order = self.DONT_KNOW
+        self._done = False
+
+    def feed(self, char, char_len):
+        if self._done:
+            return
+
+        if self._need_to_skip_char_num > 0:
+            self._need_to_skip_char_num -= char_len
+            if self._need_to_skip_char_num <= 0:
+                self._need_to_skip_char_num = 0
+            return
+
+        order = self.get_order(char)
+        if order != self.DONT_KNOW:
+            if self._last_char_order != self.DONT_KNOW:
+                self._total_rel += 1
+                if self._total_rel > self.MAX_REL_THRESHOLD:
+                    self._done = True
+                    return
+                rel = jp2_char_context[self._last_char_order][order]
+                self._rel_sample[rel] += 1
+            self._last_char_order = order
+        else:
+            self._need_to_skip_char_num = char_len - 1
+
+    def got_enough_data(self):
+        return self._total_rel > self.ENOUGH_REL_THRESHOLD
+
+    def get_confidence(self):
+        if self._total_rel > self.MINIMUM_DATA_THRESHOLD:
+            total = sum(self._rel_sample)
+            if total > 0:
+                return (self._rel_sample[4] + self._rel_sample[5]) / total
+        return self.DONT_KNOW
+
+    def get_order(self, char):
+        return self.DONT_KNOW  # This method should be implemented in subclasses
+
 
 class SJISContextAnalysis(JapaneseContextAnalysis):
 
@@ -313,6 +356,20 @@ class SJISContextAnalysis(JapaneseContextAnalysis):
         super().__init__()
         self._charset_name = 'SHIFT_JIS'
 
+    def get_order(self, char):
+        if char >= '\x81' and char <= '\x9f':
+            return ord(char) - 0x81
+        if char >= '\xe0' and char <= '\xfc':
+            return ord(char) - 0xe0 + 31
+        return self.DONT_KNOW
+
 
 class EUCJPContextAnalysis(JapaneseContextAnalysis):
-    pass
+    def __init__(self):
+        super().__init__()
+        self._charset_name = 'EUC-JP'
+
+    def get_order(self, char):
+        if char >= '\xa1' and char <= '\xfe':
+            return ord(char) - 0xa1
+        return self.DONT_KNOW
